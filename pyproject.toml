@@ -1,0 +1,18 @@
+[tool.poetry]
+name = "symbolic-ts"
+version = "0.1.0"
+description = "Symbolic time-series token schema and library: the single source of truth for tokenising time series into a domain-agnostic symbolic language"
+authors = ["Muhammet Ali Varlik"]
+license = "MIT"
+readme = "README.md"
+packages = [{ include = "symbolic_ts" }]
+
+[tool.poetry.dependencies]
+python = "^3.10"
+
+[tool.poetry.dev-dependencies]
+pytest = "^7.4"
+
+[build-system]
+requires = ["poetry-core>=1.0.0"]
+build-backend = "poetry.core.masonry.api"
