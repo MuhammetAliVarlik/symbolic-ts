@@ -19,6 +19,7 @@ from symbolic_ts.binning import SigmaBinner
 from symbolic_ts.encoding import compare_encoders
 from symbolic_ts.events import ETTEventAdapter
 from symbolic_ts.projection import FINANCE_ADAPTER, project
+from symbolic_ts.splits import walk_forward_split
 from symbolic_ts.vocabulary import NEUTRAL_CHANGE_LABELS
 
 FIGURES_DIR = Path(__file__).resolve().parent.parent / "docs" / "figures"
@@ -138,6 +139,35 @@ def plot_encoding_comparison_example() -> None:
     plt.close(fig)
 
 
+def plot_walk_forward_splits_example() -> None:
+    n = 220
+    context_len, embargo, n_folds = 20, 5, 3
+    folds = walk_forward_split(np.zeros(n), n_folds=n_folds, context_len=context_len, embargo=embargo)
+
+    fig, ax = plt.subplots(figsize=(10, 2.2 + 0.4 * n_folds))
+    for row, fold in enumerate(folds):
+        ax.barh(row, fold.train_indices.max() + 1, left=0, color="#1f77b4", label="train" if row == 0 else None)
+        gap_start = fold.train_indices.max() + 1
+        gap_width = fold.validation_indices.min() - gap_start
+        ax.barh(row, gap_width, left=gap_start, color="#dddddd", label="purge + embargo" if row == 0 else None)
+        ax.barh(
+            row,
+            fold.validation_indices.max() - fold.validation_indices.min() + 1,
+            left=fold.validation_indices.min(),
+            color="#d62728",
+            label="validation" if row == 0 else None,
+        )
+
+    ax.set_yticks(range(n_folds))
+    ax.set_yticklabels([f"fold {k}" for k in range(n_folds)])
+    ax.set_xlabel("index")
+    ax.set_title(f"walk_forward_split(n_folds={n_folds}, context_len={context_len}, embargo={embargo})")
+    ax.legend(loc="upper left", bbox_to_anchor=(1.0, 1.0))
+    fig.tight_layout()
+    fig.savefig(FIGURES_DIR / "walk_forward_split_example.png", dpi=150)
+    plt.close(fig)
+
+
 def main() -> None:
     FIGURES_DIR.mkdir(parents=True, exist_ok=True)
     raw = _synthetic_price_series()
@@ -146,6 +176,7 @@ def main() -> None:
     plot_sigma_binning_example(projected)
     plot_event_calendar_example()
     plot_encoding_comparison_example()
+    plot_walk_forward_splits_example()
     print(f"wrote figures to {FIGURES_DIR}")
 
 

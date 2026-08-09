@@ -9,9 +9,9 @@ entirely different one (e.g. an industrial sensor dataset) without retraining �
 tokens mean the same thing regardless of where the numbers came from.
 
 This README walks through the pieces of the pipeline that exist so far — projection,
-binning, vocabulary, events, and encoding — in the order data actually flows through
-them, with figures generated from the real library code (not illustrations drawn by
-hand). Regenerate them any time with:
+binning, vocabulary, events, encoding, and splitting — in the order data actually
+flows through them, with figures generated from the real library code (not
+illustrations drawn by hand). Regenerate them any time with:
 
 ```bash
 .venv/bin/python scripts/generate_readme_figures.py
@@ -253,6 +253,50 @@ stance that the model-specific pieces are supplied by the caller. `.metadata` ca
 reconstructs the canonical neutral spelling, regardless of which encoder produced the
 text, so downstream code never has to branch on which encoding was used upstream.
 
+## 6. Splits, purging, and the test-set lock
+
+**Module:** `symbolic_ts/splits.py`
+
+`walk_forward_split()` produces expanding-window folds for development, each with a
+purge gap between training and validation sized to `context_len + embargo` — without
+it, a training target near the fold boundary would use an input window reaching into
+what the validation fold is being scored on, and the model would effectively train on
+a preview of its own evaluation.
+
+```python
+from symbolic_ts.splits import walk_forward_split
+
+folds = walk_forward_split(data, n_folds=4, context_len=50, embargo=5)
+for fold in folds:
+    train = data.iloc[fold.train_indices]
+    validation = data.iloc[fold.validation_indices]
+```
+
+![walk_forward_split() with 3 folds, showing train / purge+embargo / validation regions](docs/figures/walk_forward_split_example.png)
+
+*Each fold's training window expands to include everything before its own purge gap
+— fold 2 trains on far more data than fold 0, which is the point of walk-forward
+validation over a fixed train/test split: every fold still respects chronological
+order.*
+
+Separately, `TestSetLock` implements decision D9: the real held-out test set is locked
+once, hashed at creation (over the actual data values, not just its indices — a silent
+edit to the underlying data would change the hash), and every subsequent `.read()`
+increments `test_peek_count`, raises `TestSetAccessWarning`, and best-effort logs the
+count to MLflow if it's installed and a run is active. It doesn't block access — the
+model genuinely has to run on the test set at the Phase 4 gate — it makes access
+impossible to do *silently*, since every read must be reported in the thesis per D9.
+
+```python
+from symbolic_ts.splits import TestSetLock
+
+lock = TestSetLock.create(full_series, test_fraction=0.2)  # last 20%, chronological
+lock.save("test_lock.json")
+...
+test_indices = lock.read()  # warns, increments test_peek_count, logs to MLflow
+lock.save("test_lock.json")  # persist the incremented count
+```
+
 ## Putting it together
 
 ```python
@@ -294,3 +338,5 @@ short version, for anyone reading this repo:
   additive rather than a third numeric channel.
 - **D4 — neutral labels by default, semantic as an ablation.** Both label sets cover
   the same 25-token grid; which one a model sees is an experimental variable.
+- **D9 — the test set is locked.** Hashed at creation, untouched until the Phase 4
+  gate; every read is counted and reported, not prevented.
