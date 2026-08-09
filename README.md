@@ -8,10 +8,10 @@ domain-agnostic, a model trained on one domain (e.g. finance) can be evaluated o
 entirely different one (e.g. an industrial sensor dataset) without retraining — the
 tokens mean the same thing regardless of where the numbers came from.
 
-This README walks through the three pieces of the pipeline that exist so far —
-projection, binning, and vocabulary — in the order data actually flows through them,
-with figures generated from the real library code (not illustrations drawn by hand).
-Regenerate them any time with:
+This README walks through the pieces of the pipeline that exist so far — projection,
+binning, vocabulary, events, and encoding — in the order data actually flows through
+them, with figures generated from the real library code (not illustrations drawn by
+hand). Regenerate them any time with:
 
 ```bash
 .venv/bin/python scripts/generate_readme_figures.py
@@ -30,13 +30,16 @@ flowchart LR
     F --> H["Token sequence"]
     G["Event adapter\ntimestamp + context"] --> I["Event tokens\nE_*"]
     I --> H
+    H --> J["SequenceEncoder\nneutral / semantic / single-char"]
+    J --> K["Prompt string"]
 ```
 
 Every domain — finance with a handful of price/volume columns, ETT with 7 sensor
 channels, a hypothetical deployment with 100+ sensors — goes through the same three
 stages and comes out the other end as tokens drawn from the same fixed vocabulary.
 Event tokens (seasonality, calendar effects — `F1-04`) are a separate, additive
-namespace layered onto the same sequence, not a fourth numeric channel.
+namespace layered onto the same sequence, not a fourth numeric channel. The final step
+(`F1-05`) turns the token sequence into the actual string a model reads.
 
 ## 1. Channel projection
 
@@ -175,12 +178,89 @@ either every currently-known token, or one specific label scheme passed as `allo
 `validate_sequence()` returns a `ValidationReport` with a `conformance_rate`, which is
 the actual number this project reports, not "it looked fine."
 
+## 4. Event tokens
+
+**Module:** `symbolic_ts/events.py`
+
+A domain event adapter maps one timestamp (plus optional metadata) to zero or more
+event tokens. `EventAdapter` is a *structural* protocol, not a base class — any object
+with a matching `events_for()` method satisfies it, so a third domain never requires
+editing this module, only calling `register_event_adapter("my_domain", my_adapter)`.
+
+```python
+from symbolic_ts.events import ETTEventAdapter
+
+adapter = ETTEventAdapter(
+    holiday_dates=frozenset({date(2024, 3, 1)}),
+    peak_hours=frozenset({18, 19, 20}),
+)
+adapter.events_for(datetime(2024, 3, 1, 19))  # -> ["E_HOLIDAY", "E_HOUR_PEAK", "E_SEASON_CHANGE"]
+adapter.events_for(datetime(2024, 3, 4, 9))   # -> ["E_NONE"] -- explicit, never []
+```
+
+`holiday_dates` and `peak_hours` are caller-supplied with **no built-in default** —
+Phase 0 (F0-09) established that ETT has a genuine, exact 24-hour seasonal cycle worth
+flagging, but never measured a specific peak clock hour or holiday calendar, so a
+hardcoded default here would be an unbacked number. `FinanceEventAdapter` follows the
+same shape for earnings/dividend/FOMC dates.
+
+![ETTEventAdapter.events_for() evaluated hourly over 10 days, one row per event type](docs/figures/event_calendar_example.png)
+
+*A configured holiday landing on March 1st lines up with `E_SEASON_CHANGE` (meteorological
+spring starts the same day) purely by choice of example date — the two are otherwise
+independent checks. `E_HOUR_PEAK` fires identically every day because `peak_hours` is a
+fixed set of clock hours, not calendar-aware.*
+
+Every event token an adapter can emit is registered with the vocabulary in the
+adapter's `__post_init__` — by the time `events_for()` returns a token, `validate_token()`
+already recognises it.
+
+## 5. Sequence encoders
+
+**Module:** `symbolic_ts/encoding.py`
+
+The last step turns a token sequence into the actual string a model reads. Three
+encoders share one interface because comparing them **is** the E2–E4 representation
+ablation (`WORKING_PLAN.md`), not a preference for one over the others — all three
+re-render the *same* input sequence rather than requiring a separately-fit binner per
+label scheme:
+
+```python
+from symbolic_ts.encoding import NEUTRAL_ENCODER, SEMANTIC_ENCODER, SINGLE_CHAR_ENCODER
+
+NEUTRAL_ENCODER.encode(tokens).text      # "C2_V1 E_NONE C0_V4 ..."
+SEMANTIC_ENCODER.encode(tokens).text     # "C_FLAT_V_LOW E_NONE C_CRASH_V_SURGE ..."
+SINGLE_CHAR_ENCODER.encode(tokens).text  # "L E_NONE D ..."
+```
+
+![Prompt length for the same 8-symbol sequence under all three encoders](docs/figures/encoding_comparison_example.png)
+
+*Character count, not subword-token count — this figure only needs to be reproducible
+offline, so it uses a one-character-per-token stand-in tokenizer, not a real one. The
+actual subword-token figures that motivated `single_char` in the first place
+(semantic ≈ 6.7 tokens/symbol, single-character ≈ 1 token/symbol, measured under a real
+tokeniser) are recorded in `symbolic-ts-research`'s F0-09 notes, not recomputed here.*
+
+`single_char` exists specifically because semantic labels are expensive: at ~5–7
+subword tokens per compound symbol, a 50-symbol context alone can consume a third of a
+0.5B model's practical prompt budget before any surrounding instruction text.
+
+`EncodedSequence.token_count(tokenizer)` accepts anything with an `encode(text) ->
+Sequence` method — a Hugging Face tokenizer satisfies this today, so the library never
+takes a hard dependency on a specific tokenizer package, matching `ProjectionConfig`'s
+stance that the model-specific pieces are supplied by the caller. `.metadata` carries
+`{"encoding": ..., "schema_version": ...}` for MLflow logging. `decode()` always
+reconstructs the canonical neutral spelling, regardless of which encoder produced the
+text, so downstream code never has to branch on which encoding was used upstream.
+
 ## Putting it together
 
 ```python
 from symbolic_ts.projection import project, FINANCE_ADAPTER
 from symbolic_ts.binning import SigmaBinner
 from symbolic_ts.vocabulary import NEUTRAL_CHANGE_LABELS, NEUTRAL_VOLATILITY_LABELS, validate_sequence
+from symbolic_ts.events import FinanceEventAdapter
+from symbolic_ts.encoding import NEUTRAL_ENCODER
 
 projected = project(raw_df, FINANCE_ADAPTER)
 train, test = projected.iloc[:split], projected.iloc[split:]
@@ -194,6 +274,11 @@ tokens = [f"{c}_{v}" for c, v in zip(change_tokens, vol_tokens)]
 
 report = validate_sequence(tokens)
 assert report.is_valid
+
+event_adapter = FinanceEventAdapter(earnings_dates=frozenset({...}))
+events = [event_adapter.events_for(ts) for ts in test.index]  # one list per timestep
+
+encoded = NEUTRAL_ENCODER.encode(tokens)  # -> the actual prompt string
 ```
 
 ## Locked design decisions referenced above

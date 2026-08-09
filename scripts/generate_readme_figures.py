@@ -16,6 +16,8 @@ import numpy as np
 import pandas as pd
 
 from symbolic_ts.binning import SigmaBinner
+from symbolic_ts.encoding import compare_encoders
+from symbolic_ts.events import ETTEventAdapter
 from symbolic_ts.projection import FINANCE_ADAPTER, project
 from symbolic_ts.vocabulary import NEUTRAL_CHANGE_LABELS
 
@@ -81,12 +83,69 @@ def plot_sigma_binning_example(projected: pd.DataFrame) -> None:
     plt.close(fig)
 
 
+def plot_event_calendar_example() -> None:
+    timestamps = pd.date_range("2024-02-25", periods=24 * 10, freq="h")
+    adapter = ETTEventAdapter(
+        holiday_dates=frozenset({pd.Timestamp("2024-03-01").date()}),
+        peak_hours=frozenset({18, 19, 20}),
+    )
+    event_names = ["E_WEEKEND", "E_HOLIDAY", "E_HOUR_PEAK", "E_SEASON_CHANGE"]
+    grid = np.zeros((len(event_names), len(timestamps)))
+    for col, ts in enumerate(timestamps):
+        fired = adapter.events_for(ts.to_pydatetime())
+        for row, name in enumerate(event_names):
+            grid[row, col] = 1.0 if name in fired else 0.0
+
+    fig, ax = plt.subplots(figsize=(11, 3))
+    ax.imshow(grid, aspect="auto", cmap="Greens", vmin=0, vmax=1)
+    ax.set_yticks(range(len(event_names)))
+    ax.set_yticklabels(event_names)
+    tick_positions = range(0, len(timestamps), 24)
+    ax.set_xticks(list(tick_positions))
+    ax.set_xticklabels([timestamps[k].strftime("%b %d") for k in tick_positions], rotation=45, ha="right")
+    ax.set_title("ETTEventAdapter.events_for() over 10 hourly-sampled days")
+    fig.tight_layout()
+    fig.savefig(FIGURES_DIR / "event_calendar_example.png", dpi=150)
+    plt.close(fig)
+
+
+class _CharTokenizer:
+    """Counts one 'token' per character -- NOT a real subword tokeniser. Used
+    here only to get an honest, reproducible, offline number out of
+    compare_encoders() for the figure; the actual subword-token figures
+    (~6.7 tokens/symbol semantic vs. ~1 token/symbol single-character) are
+    measured separately in symbolic-ts-research's F0-09 notes under a real
+    tokeniser and are not recomputed here."""
+
+    def encode(self, text: str) -> list[str]:
+        return list(text)
+
+
+def plot_encoding_comparison_example() -> None:
+    tokens = ["C0_V0", "C1_V2", "C2_V1", "C3_V3", "C4_V4", "C2_V2", "C1_V1", "C3_V0"]
+    reports = compare_encoders(tokens, _CharTokenizer())
+    names = [r.encoder_name for r in reports]
+    char_counts = [r.char_count for r in reports]
+
+    fig, ax = plt.subplots(figsize=(6, 4))
+    bars = ax.bar(names, char_counts, color=["#1f77b4", "#d62728", "#2ca02c"])
+    for bar, count in zip(bars, char_counts):
+        ax.text(bar.get_x() + bar.get_width() / 2, count + 0.5, str(count), ha="center")
+    ax.set_ylabel("prompt length (characters)")
+    ax.set_title(f"Same {len(tokens)}-symbol sequence, three encoders")
+    fig.tight_layout()
+    fig.savefig(FIGURES_DIR / "encoding_comparison_example.png", dpi=150)
+    plt.close(fig)
+
+
 def main() -> None:
     FIGURES_DIR.mkdir(parents=True, exist_ok=True)
     raw = _synthetic_price_series()
     projected = project(raw, FINANCE_ADAPTER)
     plot_projection_example(raw, projected)
     plot_sigma_binning_example(projected)
+    plot_event_calendar_example()
+    plot_encoding_comparison_example()
     print(f"wrote figures to {FIGURES_DIR}")
 
 
