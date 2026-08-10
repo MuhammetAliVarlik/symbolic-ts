@@ -8,10 +8,10 @@ domain-agnostic, a model trained on one domain (e.g. finance) can be evaluated o
 entirely different one (e.g. an industrial sensor dataset) without retraining — the
 tokens mean the same thing regardless of where the numbers came from.
 
-This README walks through the pieces of the pipeline that exist so far — projection,
-binning, vocabulary, events, encoding, and splitting — in the order data actually
-flows through them, with figures generated from the real library code (not
-illustrations drawn by hand). Regenerate them any time with:
+This README walks through the pieces of the library that exist so far — projection,
+binning, vocabulary, events, encoding, splitting, and metrics — roughly in the order
+data actually flows through them, with figures generated from the real library code
+(not illustrations drawn by hand). Regenerate them any time with:
 
 ```bash
 .venv/bin/python scripts/generate_readme_figures.py
@@ -296,6 +296,47 @@ lock.save("test_lock.json")
 test_indices = lock.read()  # warns, increments test_peek_count, logs to MLflow
 lock.save("test_lock.json")  # persist the incremented count
 ```
+
+## 7. Metrics
+
+**Module:** `symbolic_ts/metrics.py`
+
+Every metric and statistical test the thesis reports, in one place, each checked
+against a worked numeric example with its source cited in the function's own
+docstring — a published one (Wikipedia's cited primary sources, NIST's Statistical
+Engineering Handbook, scikit-learn's documented examples) wherever one exists, a
+hand-constructed and hand-verified one where it doesn't (labelled honestly as such,
+never misattributed).
+
+```python
+from symbolic_ts.metrics import rmse, mae, directional_accuracy
+from symbolic_ts.metrics import confusion_matrix, accuracy, macro_f1, mcc
+from symbolic_ts.metrics import wilson_score_interval
+from symbolic_ts.metrics import mcnemar_test, diebold_mariano_test, holm_correction
+
+wilson_score_interval(successes=42, n=50, confidence=0.95)
+mcnemar_test([[a, b], [c, d]])              # exact vs. chi-square chosen automatically
+diebold_mariano_test(errors_a, errors_b)    # forecast-accuracy comparison
+holm_correction([p1, p2, p3], alpha=0.05)   # once more than one pair gets compared
+```
+
+`wilson_score_interval` exists instead of the textbook normal (Wald) interval because
+Wald's coverage breaks down exactly where this project needs it most — evaluating a
+classifier's accuracy, which is a proportion, often reported near the extremes:
+
+![Wilson vs. Wald confidence interval width and lower bound as n grows, at p_hat=0.05](docs/figures/wilson_vs_wald_example.png)
+
+*At `p_hat=0.05` (a plausible per-class hit rate on a 25-token vocabulary), Wald's
+lower bound is negative for `n` below roughly 100 — a probability cannot be negative,
+so the interval itself is nonsensical exactly where sample sizes are realistically
+small. Wilson's is asymmetric and stays inside `[0, 1]` throughout.*
+
+`mcnemar_test` and `diebold_mariano_test` are the two paired significance tests the
+literature in this area actually uses — McNemar for comparing two classifiers' errors
+on the *same* test items, Diebold-Mariano for comparing two forecasts' accuracy — and
+`holm_correction` exists because running either test across every meaningful model
+pair (as `F4-02` will) means correcting for multiple comparisons, not reporting each
+pair's raw p-value as if it were the only comparison made.
 
 ## Putting it together
 
