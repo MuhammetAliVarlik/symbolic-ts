@@ -132,6 +132,13 @@ exists alongside `SigmaBinner` for the E1 ablation — comparing sigma-based buc
 against fixed-percentage buckets is itself part of the thesis's evaluation, not a
 migration from one to the other.
 
+**Missing values are refused, not binned.** `np.digitize` puts NaN in the *top*
+bucket, so a gap in the data would silently become `C4` — an "extreme up-move" token
+that validates against the schema and means the wrong thing. Both binners raise
+`ValueError` on NaN in `fit` (where it would also make `mean_`/`std_` NaN and every
+later token `C4`) and in `transform`; `±inf` still map to `C0`/`C4`, which is correct.
+`log_scale` additionally refuses negative input, whose log is NaN.
+
 Both binners persist to a JSON calibration artifact via `save()`/`load()`, tagged with
 the vocabulary's `SCHEMA_VERSION` — a binner fit under one schema version is a
 detectable mismatch, not a silent one, if loaded under another.
@@ -398,6 +405,45 @@ through short direct memory, and the PACF is what separates the two. ADF/KPSS ar
 validated against the worked sunspots example in statsmodels' own documentation; the
 Bartlett bound against the formula on NIST's autocorrelation-plot page (both cited in
 the docstrings).
+
+## 9. Thesis invariants: what the test suite guards
+
+**File:** `tests/test_thesis_invariants.py` (pipeline: `tests/_pipeline.py`)
+
+Each module has its own unit tests. This file is different: it runs the real pipeline
+end to end — `project()` → test-set lock → walk-forward split → binners fit on the
+training fold → tokens — and checks the four ways a thesis number could be wrong without
+any single module being "broken":
+
+```mermaid
+flowchart LR
+    R["raw series"] --> P["project()"]
+    P --> L["TestSetLock\n(last 20%)"]
+    P --> W["walk_forward_split\n(the rest)"]
+    W --> T["train fold"]
+    W --> V["validation block"]
+    T -->|"fit() only here"| B["SigmaBinner"]
+    V -->|"transform()"| B
+    B --> K["tokens"]
+
+    I1{{"Determinism\nsame tokens across runs\nand fresh processes"}} -.-> K
+    I2{{"Leakage\nsigma from train only;\ntransform never refits"}} -.-> B
+    I3{{"Schema\nevery token validates,\nextremes and events included"}} -.-> K
+    I4{{"Splits\ntrain / validation / test\npairwise disjoint, purged"}} -.-> W
+```
+
+| Invariant | Why it threatens a result | How it is checked |
+|---|---|---|
+| Determinism | A token stream that differs between runs makes every metric unreproducible | SHA-256 of the full token output, in-process and in two fresh interpreters with different `PYTHONHASHSEED` |
+| Leakage | Sigma fit on data that includes the future quietly calibrates tokens to the test period | Train-fold sigma differs from full-data sigma on a series whose volatility doubles halfway; `fit` is patched to fail and `transform` still runs; a reloaded calibration reproduces tokens with no fit |
+| Schema | An out-of-vocabulary or wrongly-meaning token corrupts training data silently | Every emitted token validates, including spikes beyond ±1.5σ, zero-volatility stretches and interleaved event tokens; NaN is refused rather than becoming `C4` |
+| Splits | Overlapping indices let a model be tuned on what it is evaluated on | For 1, 3 and 5 folds: train, validation and the locked test split are pairwise disjoint, the purge gap exceeds the context window, and everything precedes the test split |
+
+`tests/conftest.py` isolates two kinds of global state so that results don't depend on
+test order: the event-token registry (constructing an adapter registers its tokens) and
+MLflow (a test-split read logs `test_peek_count`; the run is redirected to a temporary
+directory and closed). CI (`.github/workflows/tests.yml`) runs the whole suite on every
+push, on Python 3.10 and 3.12.
 
 ## Putting it together
 
