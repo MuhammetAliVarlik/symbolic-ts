@@ -15,9 +15,12 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 
+from scipy import stats
+
 from symbolic_ts.binning import SigmaBinner
 from symbolic_ts.encoding import compare_encoders
 from symbolic_ts.events import ETTEventAdapter
+from symbolic_ts.metrics import wilson_score_interval
 from symbolic_ts.projection import FINANCE_ADAPTER, project
 from symbolic_ts.splits import walk_forward_split
 from symbolic_ts.vocabulary import NEUTRAL_CHANGE_LABELS
@@ -168,6 +171,44 @@ def plot_walk_forward_splits_example() -> None:
     plt.close(fig)
 
 
+def plot_wilson_vs_wald_example() -> None:
+    p_hat = 0.05  # near-boundary proportion -- where Wald's known failure mode shows up
+    ns = np.array([10, 20, 50, 100, 200, 500, 1000, 2000])
+    z = stats.norm.ppf(0.975)  # 95% confidence
+
+    wilson_widths, wald_lower = [], []
+    for n in ns:
+        successes = int(round(p_hat * n))
+        lower, upper = wilson_score_interval(successes, n, confidence=0.95)
+        wilson_widths.append(upper - lower)
+        wald_margin = z * np.sqrt(p_hat * (1 - p_hat) / n)
+        wald_lower.append(p_hat - wald_margin)
+
+    wald_lower = np.array(wald_lower)
+    wald_widths = 2 * z * np.sqrt(p_hat * (1 - p_hat) / ns)
+
+    fig, axes = plt.subplots(1, 2, figsize=(11, 4))
+    axes[0].plot(ns, wilson_widths, marker="o", label="Wilson", color="#1f77b4")
+    axes[0].plot(ns, wald_widths, marker="o", label="Wald (naive normal)", color="#d62728")
+    axes[0].set_xscale("log")
+    axes[0].set_xlabel("n")
+    axes[0].set_ylabel("95% CI width")
+    axes[0].set_title(f"Interval width at p_hat={p_hat}")
+    axes[0].legend()
+
+    axes[1].axhline(0, color="black", linewidth=0.8)
+    axes[1].plot(ns, wald_lower, marker="o", color="#d62728", label="Wald lower bound")
+    axes[1].set_xscale("log")
+    axes[1].set_xlabel("n")
+    axes[1].set_ylabel("lower bound")
+    axes[1].set_title("Wald's lower bound goes negative --\na probability can't be negative")
+    axes[1].legend()
+
+    fig.tight_layout()
+    fig.savefig(FIGURES_DIR / "wilson_vs_wald_example.png", dpi=150)
+    plt.close(fig)
+
+
 def main() -> None:
     FIGURES_DIR.mkdir(parents=True, exist_ok=True)
     raw = _synthetic_price_series()
@@ -177,6 +218,7 @@ def main() -> None:
     plot_event_calendar_example()
     plot_encoding_comparison_example()
     plot_walk_forward_splits_example()
+    plot_wilson_vs_wald_example()
     print(f"wrote figures to {FIGURES_DIR}")
 
 
