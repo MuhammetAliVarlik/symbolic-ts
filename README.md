@@ -9,7 +9,8 @@ entirely different one (e.g. an industrial sensor dataset) without retraining �
 tokens mean the same thing regardless of where the numbers came from.
 
 This README walks through the pieces of the library that exist so far — projection,
-binning, vocabulary, events, encoding, splitting, and metrics — roughly in the order
+binning, vocabulary, events, encoding, splitting, metrics, and stationarity
+helpers — roughly in the order
 data actually flows through them, with figures generated from the real library code
 (not illustrations drawn by hand). Regenerate them any time with:
 
@@ -337,6 +338,66 @@ on the *same* test items, Diebold-Mariano for comparing two forecasts' accuracy 
 `holm_correction` exists because running either test across every meaningful model
 pair (as `F4-02` will) means correcting for multiple comparisons, not reporting each
 pair's raw p-value as if it were the only comparison made.
+
+## 8. Stationarity helpers
+
+**Module:** `symbolic_ts/stationarity.py`
+
+The questions behind two design decisions — *which transform makes the series
+stationary?* (why `change` is a difference, `F0-03`) and *how far back does the
+memory reach?* (why the context window is 50 tokens, `F0-09`) — are answered with
+ADF, KPSS, ACF and PACF. This module is the one implementation of those four, so the
+Phase 0 analyses and the thesis pipeline produce the same numbers from the same code.
+
+```python
+from symbolic_ts.stationarity import adf_test, kpss_test, acf_with_bounds, pacf_with_bounds
+
+adf = adf_test(series)            # StationarityTestResult: statistic, p_value, lags, critical_values
+kpss = kpss_test(series)
+adf.is_stationary, kpss.is_stationary
+
+acf = acf_with_bounds(tokens, nlags=300)   # Correlogram: lags, values, bounds
+pacf = pacf_with_bounds(tokens, nlags=50)
+pacf.outside_bounds()                       # which lags are significant
+acf.first_lag_within_bounds(consecutive=3)  # where the series decorrelates
+```
+
+**Two tests, opposite nulls.** ADF's null hypothesis is a unit root (non-stationary);
+KPSS's is stationarity. "Rejected" therefore means opposite things for the two, which
+is an easy bug to write in every script that calls them. `is_stationary` resolves it
+once:
+
+| | ADF (H0: unit root) | KPSS (H0: stationary) |
+|---|---|---|
+| p < alpha | stationary | non-stationary |
+| p >= alpha | non-stationary | stationary |
+
+Running both is the point: when they agree, the conclusion is solid; when they
+disagree (ADF says stationary, KPSS says not — what `F0-03` saw on raw ETT), that is
+the signature of a slowly moving mean, i.e. seasonality, not a random walk. KPSS
+p-values come from a table that only covers [0.01, 0.1]; outside it the value is
+clipped to the edge, and `p_value_clipped` says so instead of letting a clipped 0.01
+pass for the real p-value.
+
+**Why the ACF bound widens and the PACF bound doesn't.** The band an autocorrelation
+is compared against matters as much as the value itself:
+
+![ACF of an AR(1) series with Bartlett bounds next to its PACF with the constant white-noise band](docs/figures/correlogram_bounds_example.png)
+
+*An AR(1) series (phi=0.8, n=300) generated with a fixed seed, run through the real
+`acf_with_bounds` / `pacf_with_bounds`. Left: the ACF decays slowly. Bartlett's bound
+(shaded) widens with every autocorrelation already estimated below it; the constant
+white-noise band (dashed) would also flag lags 6, 11-12 and 24-30 as "significant",
+when Bartlett's bound puts only lags 1-5 outside. Right: the PACF cuts off after lag 1, exactly what an
+AR(1) should do. The two small crossings at lags 10 and 25 are what a 95% band
+produces by chance over 30 lags (about 1.5 expected) — which is also why
+`first_lag_within_bounds` asks for several consecutive lags inside the band, not one.*
+
+This is the reasoning behind the context window: a long ACF tail can be propagation
+through short direct memory, and the PACF is what separates the two. ADF/KPSS are
+validated against the worked sunspots example in statsmodels' own documentation; the
+Bartlett bound against the formula on NIST's autocorrelation-plot page (both cited in
+the docstrings).
 
 ## Putting it together
 
