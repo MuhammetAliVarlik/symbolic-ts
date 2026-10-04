@@ -23,6 +23,7 @@ from symbolic_ts.events import ETTEventAdapter
 from symbolic_ts.metrics import wilson_score_interval
 from symbolic_ts.projection import FINANCE_ADAPTER, project
 from symbolic_ts.splits import walk_forward_split
+from symbolic_ts.stationarity import acf_with_bounds, pacf_with_bounds
 from symbolic_ts.vocabulary import NEUTRAL_CHANGE_LABELS
 
 FIGURES_DIR = Path(__file__).resolve().parent.parent / "docs" / "figures"
@@ -209,6 +210,41 @@ def plot_wilson_vs_wald_example() -> None:
     plt.close(fig)
 
 
+def plot_correlogram_bounds_example() -> None:
+    # Own generator, so adding this figure leaves every earlier figure's random draws unchanged.
+    rng = np.random.default_rng(seed=11)
+    phi, n, nlags = 0.8, 300, 30
+    x = np.zeros(n)
+    for t in range(1, n):
+        x[t] = phi * x[t - 1] + rng.standard_normal()
+
+    acf_result = acf_with_bounds(x, nlags=nlags)
+    pacf_result = pacf_with_bounds(x, nlags=nlags)
+    white_noise_band = stats.norm.ppf(0.975) / np.sqrt(n)
+
+    fig, axes = plt.subplots(1, 2, figsize=(11, 4), sharey=True)
+    for ax, result in zip(axes, [acf_result, pacf_result]):
+        outside = result.outside_bounds()
+        ax.vlines(result.lags, 0, result.values, color=np.where(outside, "#d62728", "#7f7f7f"))
+        ax.scatter(result.lags, result.values, s=12, color=np.where(outside, "#d62728", "#7f7f7f"), zorder=3)
+        ax.fill_between(result.lags, -result.bounds, result.bounds, color="#1f77b4", alpha=0.2,
+                        label=f"{result.bound_method} bound (95%)")
+        ax.axhline(0, color="black", linewidth=0.5)
+        ax.set_xlabel("lag")
+    axes[0].plot(acf_result.lags, np.full(nlags, white_noise_band), "--", color="#1f77b4", linewidth=0.8,
+                 label="white-noise band (for comparison)")
+    axes[0].plot(acf_result.lags, np.full(nlags, -white_noise_band), "--", color="#1f77b4", linewidth=0.8)
+    axes[0].set_ylabel("correlation")
+    axes[0].set_title(f"ACF of an AR(1), phi={phi}: slow decay")
+    axes[1].set_title("PACF of the same series: cuts off after lag 1")
+    for ax in axes:
+        ax.legend(loc="upper right")
+
+    fig.tight_layout()
+    fig.savefig(FIGURES_DIR / "correlogram_bounds_example.png", dpi=150)
+    plt.close(fig)
+
+
 def main() -> None:
     FIGURES_DIR.mkdir(parents=True, exist_ok=True)
     raw = _synthetic_price_series()
@@ -219,6 +255,7 @@ def main() -> None:
     plot_encoding_comparison_example()
     plot_walk_forward_splits_example()
     plot_wilson_vs_wald_example()
+    plot_correlogram_bounds_example()
     print(f"wrote figures to {FIGURES_DIR}")
 
 
