@@ -47,6 +47,17 @@ class NotFittedError(RuntimeError):
     """Raised by transform()/save() when called before fit() or load()."""
 
 
+def _as_numeric_array(data: npt.ArrayLike, caller: str) -> np.ndarray:
+    """NaN has no bucket. Left to `np.digitize` it lands in the TOP bucket --
+    a data gap would silently become "extreme up-move", a valid-looking token
+    with the wrong meaning; in `fit` it makes mean/std NaN and every later
+    token the top bucket. +/-inf are kept: they do have a correct bucket."""
+    arr = np.asarray(data, dtype=float)
+    if np.isnan(arr).any():
+        raise ValueError(f"{caller}: input contains NaN; drop or fill missing values first")
+    return arr
+
+
 @dataclass
 class SigmaBinner:
     """Sigma-based quantisation: bucket a value by how many training-fit
@@ -88,7 +99,7 @@ class SigmaBinner:
         return np.log(arr + self.log_epsilon)
 
     def fit(self, train_data: npt.ArrayLike) -> "SigmaBinner":
-        arr = np.asarray(train_data, dtype=float)
+        arr = _as_numeric_array(train_data, "SigmaBinner.fit()")
         if self.log_scale:
             arr = arr[~np.isclose(arr, 0.0, atol=self.zero_tolerance)]
             arr = self._log(arr)
@@ -99,8 +110,10 @@ class SigmaBinner:
     def transform(self, data: npt.ArrayLike) -> list[str]:
         if not self.is_fitted:
             raise NotFittedError("SigmaBinner.transform() called before fit() or load()")
-        arr = np.asarray(data, dtype=float)
+        arr = _as_numeric_array(data, "SigmaBinner.transform()")
         if self.log_scale:
+            if (arr < 0).any():
+                raise ValueError("SigmaBinner.transform(): log_scale requires non-negative input")
             arr = self._log(arr)
         z = (arr - self.mean_) / self.std_
         idx = np.digitize(z, self.sigma_edges)
@@ -163,14 +176,14 @@ class FixedPercentBinner:
         return self.edges_ is not None
 
     def fit(self, train_data: npt.ArrayLike) -> "FixedPercentBinner":
-        arr = np.asarray(train_data, dtype=float)
+        arr = _as_numeric_array(train_data, "FixedPercentBinner.fit()")
         self.edges_ = tuple(float(x) for x in np.quantile(arr, self.quantiles))
         return self
 
     def transform(self, data: npt.ArrayLike) -> list[str]:
         if not self.is_fitted:
             raise NotFittedError("FixedPercentBinner.transform() called before fit() or load()")
-        arr = np.asarray(data, dtype=float)
+        arr = _as_numeric_array(data, "FixedPercentBinner.transform()")
         idx = np.digitize(arr, self.edges_)
         return [self.labels[i] for i in idx]
 
