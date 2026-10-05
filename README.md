@@ -110,6 +110,34 @@ level is not stationary. A sigma threshold from one part of a series that grows 
 drifts does not apply to a different part. The sum of `change` values already holds the
 level information, without this problem.
 
+**Daily aggregation:** Compare a sub-daily domain with a daily domain only after
+`to_daily()`. A lag-1 transition must then cover the same elapsed time in both domains
+(the F0-07 result about sampling frequency). The default is `how="last"`: the last value of each calendar day. This makes a sensor value equivalent to the finance daily close, a snapshot at day end. `how="mean"` averages the day.
+
+```python
+from symbolic_ts.projection import to_daily, project, ETT_ADAPTER
+
+ett_daily = project(to_daily(ett_hourly_df), ETT_ADAPTER)            # default: "last"
+ett_daily_mean = project(to_daily(ett_hourly_df, how="mean"), ETT_ADAPTER)
+```
+
+```mermaid
+flowchart LR
+    H["Hourly or 15-min readings
+(DatetimeIndex)"] --> TD{"to_daily(how=...)"}
+    TD -->|"last (default)"| L["Last reading of each day
+= same meaning as a daily close"]
+    TD -->|mean| M["Mean of each day"]
+    L --> P["project()"]
+    M --> P
+    P --> T["change, volatility
+(one row per day)"]
+```
+
+This default is a recorded design decision (B1, 2026-10-05). It is not a neutral detail.
+In `symbolic-ts-research`, F0-11 and F1-11 show that `last` and `mean` change the
+cross-domain similarity results materially. Thus the research reports both.
+
 **Missing values:** A NaN in the base reading goes into `change` (1 row). It also goes
 into `volatility` (up to `volatility_window` rows), because a rolling std over a window
 with a NaN is NaN. `project()` removes all these rows. The output never contains NaN.
@@ -325,12 +353,15 @@ flowchart LR
 ![Prompt length for the same 8-symbol sequence under all three encoders](docs/figures/encoding_comparison_example.png)
 
 *The plot counts characters, not subword tokens. The plot must work offline, so it uses
-a stand-in tokenizer with one token per character. The real subword-token values are in
-the F0-09 notes of `symbolic-ts-research`: semantic ≈ 6.7 tokens per symbol,
-single-character ≈ 1 token per symbol. This README does not calculate them again.*
+a stand-in tokenizer with one token per character.*
+
+**The subword-token values below are estimates, not measurements.** The F0-09 notes of
+`symbolic-ts-research` give semantic ≈ 6.7 tokens per symbol and single-character ≈ 1
+token per symbol. The 6.7 comes from an estimate in the project plan (200 tokens for a 30-symbol context), not from a real tokenizer. Task `F3-01` measures the real values with the
+Qwen2.5 tokenizer and replaces these numbers.
 
 `single_char` exists because semantic labels are expensive. One compound symbol costs
-approximately 5–7 subword tokens. A 50-symbol context can then use one third of the
+approximately 5–7 subword tokens (an estimate, see above). A 50-symbol context can then use one third of the
 practical prompt budget of a 0.5B model.
 
 `EncodedSequence.token_count(tokenizer)` accepts each object with an
