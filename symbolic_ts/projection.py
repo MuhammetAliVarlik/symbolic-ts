@@ -23,11 +23,21 @@ import numpy as np
 import pandas as pd
 
 ChangeType = Literal["diff", "log_return"]
+DailyAggregation = Literal["last", "mean"]
 
 # Rolling window for the volatility channel. Matches the short-window
 # realised-volatility figure validated in Phase 0 (F0-04); revisit only with
 # evidence from the real ACF/PACF lag structure (F1's analogue of F0-09).
 DEFAULT_VOLATILITY_WINDOW = 20
+
+# Default daily aggregation for sub-daily readings (decision B1, Muhammet,
+# 2026-10-05): the LAST reading of each calendar day. Finance's daily bar is
+# an end-of-day close, so `.last()` gives a sub-daily sensor the same
+# meaning: a snapshot at day end, not an average over the day. This is a
+# recorded design decision, not a neutral detail: in symbolic-ts-research,
+# F0-11 and F1-11 showed that `.last()` and `.mean()` change the cross-domain
+# similarity results materially. Report both where that comparison matters.
+DEFAULT_DAILY_AGGREGATION: DailyAggregation = "last"
 
 
 @dataclass(frozen=True)
@@ -82,3 +92,25 @@ def project(df: pd.DataFrame, config: ProjectionConfig) -> pd.DataFrame:
     change = _compute_change(reading, config.change_type)
     volatility = change.rolling(config.volatility_window).std()
     return pd.DataFrame({"change": change, "volatility": volatility}).dropna()
+
+
+def to_daily(df: pd.DataFrame, how: DailyAggregation = DEFAULT_DAILY_AGGREGATION) -> pd.DataFrame:
+    """Resample a sub-daily DataFrame (DatetimeIndex) to one row per calendar
+    day, before `project()`. `how="last"` (the default, see
+    `DEFAULT_DAILY_AGGREGATION`) keeps each column's last non-missing value of
+    the day; `how="mean"` averages the day. Days with a missing value after
+    aggregation are dropped, the same rule `project()` applies.
+
+    Use this when a sub-daily domain is compared with a daily one: a lag-1
+    transition must cover comparable elapsed time in both (F0-07's sampling
+    frequency finding)."""
+    if not isinstance(df.index, pd.DatetimeIndex):
+        raise TypeError(f"to_daily needs a DatetimeIndex, got {type(df.index).__name__}")
+    daily = df.resample("D")
+    if how == "last":
+        out = daily.last()
+    elif how == "mean":
+        out = daily.mean()
+    else:
+        raise ValueError(f"unknown how {how!r}, expected 'last' or 'mean'")
+    return out.dropna()

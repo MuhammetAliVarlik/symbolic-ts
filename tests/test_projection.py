@@ -2,6 +2,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
+from symbolic_ts import projection as proj
 from symbolic_ts.projection import (
     DEFAULT_VOLATILITY_WINDOW,
     ETT_ADAPTER,
@@ -102,3 +103,47 @@ def test_project_is_deterministic():
     out_a = project(df, config)
     out_b = project(df, config)
     pd.testing.assert_frame_equal(out_a, out_b)
+
+
+def _hourly(values, start="2024-01-01 00:00"):
+    return pd.DataFrame({"OT": values}, index=pd.date_range(start, periods=len(values), freq="h"))
+
+
+def test_default_daily_aggregation_is_last():
+    assert proj.DEFAULT_DAILY_AGGREGATION == "last"
+
+
+def test_to_daily_last_keeps_the_end_of_day_reading():
+    df = _hourly(list(range(48)))  # two full days: 0..23, 24..47
+    assert proj.to_daily(df)["OT"].tolist() == [23, 47]
+
+
+def test_to_daily_mean_averages_the_day():
+    df = _hourly(list(range(48)))
+    assert proj.to_daily(df, how="mean")["OT"].tolist() == [11.5, 35.5]
+
+
+def test_to_daily_last_skips_a_missing_final_reading():
+    values = [float(v) for v in range(24)]
+    values[-1] = float("nan")
+    assert proj.to_daily(_hourly(values))["OT"].tolist() == [22.0]
+
+
+def test_to_daily_drops_days_without_data():
+    df = pd.concat([_hourly([1.0] * 24, "2024-01-01"), _hourly([2.0] * 24, "2024-01-03")])
+    out = proj.to_daily(df)
+    assert out.index.strftime("%Y-%m-%d").tolist() == ["2024-01-01", "2024-01-03"]
+
+
+def test_to_daily_matches_pandas_resample_last_used_in_phase_0():
+    rng = np.random.default_rng(0)
+    df = _hourly(rng.normal(size=24 * 30))
+    expected = df["OT"].resample("D").last().dropna()
+    pd.testing.assert_series_equal(proj.to_daily(df)["OT"], expected)
+
+
+def test_to_daily_refuses_a_non_datetime_index_and_unknown_how():
+    with pytest.raises(TypeError, match="DatetimeIndex"):
+        proj.to_daily(pd.DataFrame({"OT": [1.0, 2.0]}))
+    with pytest.raises(ValueError, match="unknown how"):
+        proj.to_daily(_hourly([1.0] * 24), how="median")
